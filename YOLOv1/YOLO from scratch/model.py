@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 architecture = [
-(7,64, 2, 3), 
+(7,64, 2, 3), #kernel, output channels, different kernels, in cn layer, stride, padding
 "MaxPool",
 (3, 192, 1, 1),
 "MaxPool",
@@ -50,9 +50,11 @@ class Yolov1(nn.Module):
         self.fcs = self.Create_FCLayers(**kwargs)
 
     def forward(self, x): 
-        x = self.darknet(x)
-        return self.fcs(torch.flatten(x, start_dim=1))
-    
+        x = self.darknet(x) 
+        flattenx = torch.flatten(x, start_dim=1)
+        return self.fcs(flattenx)  #start dim = 1 because we do not want to flatten
+    #number of examples 
+
     def Create_CNNLayers(self, architecture): 
         layers = []
         in_channels = self.in_channels
@@ -67,21 +69,18 @@ class Yolov1(nn.Module):
                 layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
 
         return nn.Sequential(*layers) 
-    #nn creates model, *layers unpack list
+    #nn creates model, *layers --nn.seq --> unpack list
 
     def Create_FCLayers(self, split_size, num_boxes, num_classes):
         S, B, C = split_size, num_boxes, num_classes
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(1024 * S * S, 512), #4096 instead but takes more time
+            nn.Linear(S*S*2048, 512), #1024*S*S is in the paper input features
+            #4096 is output instead but takes more time
             nn.Dropout(0.0),
             nn.LeakyReLU(0.1),
             nn.Linear(512, S*S*(C+B*5)), # 7x7x30
         )
 
-def test(S=7, B=2, C=20): #data from paper
-    model = Yolov1(split_size=S, num_boxes=B, num_classes=C)
-    x = torch.randn((1,3, 448,448))
-    print(model(x).shape)
 
-test() 
+
