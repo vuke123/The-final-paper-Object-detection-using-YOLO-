@@ -7,8 +7,11 @@ import torchvision.transforms.functional as FT
 from tqdm import tqdm 
 from torch.utils.data import DataLoader
 from model import Yolov1
-from dataset import VOCDataset
+from dataset import VOCDataset, VOCDataset2
 from PIL import Image
+import torch.optim as optim
+import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import MultiStepLR
 import torchvision.models as models
 from utils import(
     intersection_over_union,
@@ -26,18 +29,23 @@ from loss import YoloLoss
 seed = 123
 torch.manual_seed(seed)
 
-LEARNING_RATE = 2e-5
-DEVICE = "cpu" 
-BATCH_SIZE = 4
-WEIGHT_DECAY = 0
-EPOCHS = 100
+LEARNING_RATE = 2e-4
+DEVICE="cpu"
+STEP_SIZE = 100
+GAMMA = 0.1
+
+if torch.cuda.is_available():
+    DEVICE="cuda"
+print(DEVICE)
+
+BATCH_SIZE = 16
+WEIGHT_DECAY = 0.0002
+EPOCHS = 135
 NUM_WORKERS = 2
 PIN_MEMORY = True
 LOAD_MODEL = False
 LOAD_MODEL_FILE = "overfit.pth.tar"
-IMG_DIR = "data/smallldataset"
-LABEL_DIR = "data/smalllabels"
-
+IMG_DIR = "selfdriving-images"
 
 class Compose(object):
     def __init__(self, transforms):
@@ -49,8 +57,7 @@ class Compose(object):
 
         return img, bboxes
 
-
-transform = Compose([transforms.Resize((224, 224)), transforms.ToTensor(),])
+transform = Compose([transforms.Resize((448, 448)), transforms.ToTensor(),])
 #224, 224 if we use ResNet50
 
 def train_fn(train_loader, model, optimizer, loss_fn):
@@ -58,12 +65,14 @@ def train_fn(train_loader, model, optimizer, loss_fn):
     mean_loss = []
 
     for batch_idx, (x, y) in enumerate(loop):
-       # x, y = x.to(DEVICE), y.to(DEVICE)
+        x, y = x.to(DEVICE), y.to(DEVICE)
+        model.to(DEVICE)
         out = model(x)
         loss = loss_fn(out, y)
         mean_loss.append(loss.item())
         optimizer.zero_grad()
         loss.backward()
+
         optimizer.step()
 
         # update progress bar
@@ -74,26 +83,31 @@ def train_fn(train_loader, model, optimizer, loss_fn):
 
 def main():
     
-    model = Yolov1(split_size=7, num_boxes=2, num_classes=20).to(DEVICE)
+    model = Yolov1(split_size=7, num_boxes=2, num_classes=5)
     optimizer = optim.Adam(
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
     )
 
-    loss_fn = YoloLoss()
+    #milestones = [30, 105, 135]
+
+    #scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=GAMMA)
+
+    loss_fn = YoloLoss(C=5)
 
     if LOAD_MODEL:
         load_checkpoint(torch.load(LOAD_MODEL_FILE), model, optimizer)
 
-    train_dataset = VOCDataset(
-        "data/8examples.csv",
+    train_dataset = VOCDataset2(
+        "resized_file.csv",
+        "yolo",
         transform=transform,
         img_dir=IMG_DIR,
-        label_dir=LABEL_DIR,
+        images_width=480, images_height=300
     )
 
-    test_dataset = VOCDataset(
-        "data/test.csv", transform=transform, img_dir=IMG_DIR, label_dir=LABEL_DIR,
-    )
+    # test_dataset = VOCDataset(
+    #     "data/test.csv", transform=transform, img_dir=IMG_DIR, label_dir=LABEL_DIR,
+    # )
 
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -103,15 +117,15 @@ def main():
         shuffle=True,
         drop_last=True,
     )
-
-    test_loader = DataLoader(
-        dataset=test_dataset,
-        batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY,
-        shuffle=True,
-        drop_last=True,
-    )
+    
+    # test_loader = DataLoader(
+    #     dataset=test_dataset,
+    #     batch_size=BATCH_SIZE,
+    #     num_workers=NUM_WORKERS,
+    #     pin_memory=PIN_MEMORY,
+    #     shuffle=True,
+    #     drop_last=True,
+    # )
 
     gc.collect() #garbage collector
 
@@ -119,14 +133,14 @@ def main():
     #fixed feature extractor is when we freeze first conv layers
     resnet = models.resnet50(pretrained=True)
 
-
     resnet = nn.Sequential(*list(resnet.children())[:-2])
     #removing last fully connected layers and average pooling layers also 
 
-    #resnet.fc = nn.Identity()
+    resnet.fc = nn.Identity()
 
-    model.darknet = resnet
-    
+    #model.darknet = resnet
+
+    model.to(DEVICE)
     # Replace the first convolutional layer in YOLO with the first convolutional layer in ResNet
 
     for epoch in range(EPOCHS):
@@ -142,6 +156,8 @@ def main():
         #    import sys
         #    sys.exit()
 
+        print("EPOCH {}.".format(epoch))
+
 
         pred_boxes, target_boxes = get_bboxes(
             train_loader, model, iou_threshold=0.5, threshold=0.4
@@ -150,18 +166,24 @@ def main():
         mean_avg_prec = mean_average_precision(
             pred_boxes, target_boxes, iou_threshold=0.5, box_format="midpoint"
         )
+
         print(f"Train mAP: {mean_avg_prec}")
 
-        if mean_avg_prec > 0.9:
+        if epoch == 30 or epoch == 75 or epoch == 100 or epoch == 133:
            checkpoint = {
                "state_dict": model.state_dict(),
                "optimizer": optimizer.state_dict(),
            }
-           save_checkpoint(checkpoint, filename=LOAD_MODEL_FILE)
+           file_name = mean_avg_prec + "_" + checkpoint +"_" + LOAD_MODEL_FILE
+
+           save_checkpoint(checkpoint, filename=file_name)
            import time
            time.sleep(10)
 
+
         train_fn(train_loader, model, optimizer, loss_fn)
+
+        #scheduler.step()
 
 
 if __name__ == "__main__":

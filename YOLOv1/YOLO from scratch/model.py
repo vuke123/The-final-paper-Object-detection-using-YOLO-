@@ -1,6 +1,12 @@
 import torch 
 import torch.nn as nn
 
+
+device="cpu"
+if torch.cuda.is_available():
+    device="cuda"
+print(device)
+
 architecture = [
 (7,64, 2, 3), #kernel, output channels, different kernels, in cn layer, stride, padding
 "MaxPool",
@@ -36,10 +42,11 @@ class CNNLayer(nn.Module):
     def __init__(self, in_channels, out_channels, **kwargs):
         super(CNNLayer, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, bias = False, **kwargs)
+        self.batchnorm = nn.BatchNorm2d(out_channels)
         self.leakyrelu = nn.LeakyReLU(0.1)
 
     def forward(self, x):
-        return self.leakyrelu(self.conv(x))
+        return self.leakyrelu(self.batchnorm(self.conv(x)))
     
 class Yolov1(nn.Module):
     def __init__(self, in_channels=3, **kwargs): 
@@ -48,8 +55,10 @@ class Yolov1(nn.Module):
         self.in_channels = in_channels
         self.darknet = self.Create_CNNLayers(self.architecture)
         self.fcs = self.Create_FCLayers(**kwargs)
+        self.to(device) # Move the entire model to CUDA if possible
 
     def forward(self, x): 
+        
         x = self.darknet(x) 
         flattenx = torch.flatten(x, start_dim=1)
         return self.fcs(flattenx)  #start dim = 1 because we do not want to flatten
@@ -75,11 +84,11 @@ class Yolov1(nn.Module):
         S, B, C = split_size, num_boxes, num_classes
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(S*S*2048, 512), #1024*S*S is in the paper input features
+            nn.Linear(S*S*1024, 512), #1024*S*S is in the paper input features
             #4096 is output instead but takes more time
             nn.Dropout(0.0),
             nn.LeakyReLU(0.1),
-            nn.Linear(512, S*S*(C+B*5)), # 7x7x30
+            nn.Linear(512, S*S*(C+B*5)), # 7x7x30 || 7x7x15 
         )
 
 

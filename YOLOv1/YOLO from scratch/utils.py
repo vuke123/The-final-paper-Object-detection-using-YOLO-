@@ -4,6 +4,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from collections import Counter
 
+device="cpu"
+if torch.cuda.is_available():
+    device="cuda"
+print(device)
+
 def intersection_over_union(boxes_preds, boxes_labels, box_format="midpoint"):
     """
     Calculates intersection over union
@@ -49,7 +54,7 @@ def intersection_over_union(boxes_preds, boxes_labels, box_format="midpoint"):
     box2_area = abs((box2_x2 - box2_x1) * (box2_y2 - box2_y1))
 
     return intersection / (box1_area + box2_area - intersection + 1e-6)
-# avoid this division by zero error and maintain numerical stability, a small constant value
+
 
 def non_max_suppression(bboxes, iou_threshold, threshold, box_format="corners"):
     """
@@ -239,22 +244,18 @@ def get_bboxes(
     threshold,
     pred_format="cells",
     box_format="midpoint",
-    device="cpu",
 ):
     all_pred_boxes = []
     all_true_boxes = []
 
     # make sure model is in eval before get bboxes
     model.eval()
-    #kind of switch for some specific layers/parts of the model that
-    #behave differently during training and inference (evaluating) time. 
-    # For example, Dropouts Layers, BatchNorm Layers etc
     train_idx = 0
 
-    for batch in loader:
-     #   x = x.to(device)
-     #   labels = labels.to(device)
-        x, labels = batch
+    for batch_idx, (x, labels) in enumerate(loader):
+        x = x.to(device)
+        labels = labels.to(device)
+
         with torch.no_grad():
             predictions = model(x)
 
@@ -285,10 +286,6 @@ def get_bboxes(
             train_idx += 1
 
     model.train()
-    #activating dropout layers, enabling batch normalization layers to
-    #  update their running statistics,
-    #  and updating gradients during backpropagation
-
     return all_pred_boxes, all_true_boxes
 
 
@@ -306,11 +303,11 @@ def convert_cellboxes(predictions, S=7):
 
     predictions = predictions.to("cpu")
     batch_size = predictions.shape[0]
-    predictions = predictions.reshape(batch_size, 7, 7, 30)
-    bboxes1 = predictions[..., 21:25]
-    bboxes2 = predictions[..., 26:30]
+    predictions = predictions.reshape(batch_size, 7, 7, 15)
+    bboxes1 = predictions[..., 6:10]
+    bboxes2 = predictions[..., 11:15]
     scores = torch.cat(
-        (predictions[..., 20].unsqueeze(0), predictions[..., 25].unsqueeze(0)), dim=0
+        (predictions[..., 5].unsqueeze(0), predictions[..., 10].unsqueeze(0)), dim=0
     )
     best_box = scores.argmax(0).unsqueeze(-1)
     best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2
@@ -319,8 +316,8 @@ def convert_cellboxes(predictions, S=7):
     y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))
     w_y = 1 / S * best_boxes[..., 2:4]
     converted_bboxes = torch.cat((x, y, w_y), dim=-1)
-    predicted_class = predictions[..., :20].argmax(-1).unsqueeze(-1)
-    best_confidence = torch.max(predictions[..., 20], predictions[..., 25]).unsqueeze(
+    predicted_class = predictions[..., :5].argmax(-1).unsqueeze(-1)
+    best_confidence = torch.max(predictions[..., 5], predictions[..., 10]).unsqueeze(
         -1
     )
     converted_preds = torch.cat(
